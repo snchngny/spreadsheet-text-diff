@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>表テキスト差分比較</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172430;
+      --muted: #66747f;
+      --line: #d8e0e5;
+      --canvas: #f4f7f8;
+      --panel: #fff;
+      --navy: #17324d;
+      --blue: #216ca8;
+      --blue-hover: #175888;
+      --blue-soft: #eaf4fb;
+      --red: #a22e2e;
+      --red-soft: #ffe0de;
+      --red-line: #ed8e88;
+      --green: #1d7450;
+      --green-soft: #e9f7f0;
+      --shadow: 0 12px 32px rgba(24, 51, 74, .08);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 5% -8%, #dcedf5 0, transparent 28rem),
+        var(--canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans",
+        "Yu Gothic UI", "Noto Sans JP", sans-serif;
+      line-height: 1.5;
+    }
+    button, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app { width: min(1500px, calc(100% - 28px)); margin: 0 auto; padding: 22px 0 56px; }
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center; gap: 18px;
+      padding: 20px 22px; border-radius: 17px; color: white;
+      background: linear-gradient(135deg, #112c45 0%, #1b547b 70%, #297f9f 100%);
+      box-shadow: var(--shadow);
+    }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .logo {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 3px;
+      width: 40px; height: 40px; padding: 7px; border-radius: 10px;
+      background: rgba(255,255,255,.13); border: 1px solid rgba(255,255,255,.22);
+    }
+    .logo i { border-radius: 2px; background: #fff; opacity: .9; }
+    h1 { margin: 0; font-size: clamp(20px, 3vw, 28px); letter-spacing: -.025em; }
+    .subtitle { margin: 3px 0 0; color: #d3e5ef; font-size: 12px; }
+    .privacy { flex: none; padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.1); font-size: 11px; }
+    .input-section {
+      margin-top: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 17px;
+      background: var(--panel); box-shadow: var(--shadow);
+    }
+    .section-head {
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 13px;
+    }
+    h2 { margin: 0; color: var(--navy); font-size: 18px; letter-spacing: -.015em; }
+    .hint { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .paste-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .paste-card { overflow: hidden; border: 1px solid #cdd7de; border-radius: 13px; background: #fafcfd; }
+    .paste-head {
+      display: flex; justify-content: space-between; align-items: center; gap: 10px;
+      padding: 9px 11px; border-bottom: 1px solid #dce3e8; background: #edf3f6;
+    }
+    .paste-head strong { color: var(--navy); font-size: 13px; }
+    .paste-meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    textarea {
+      display: block; width: 100%; min-height: 190px; resize: vertical; padding: 12px;
+      border: 0; outline: 0; background: white; color: #263642;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; line-height: 1.45; white-space: pre;
+    }
+    textarea:focus { box-shadow: inset 0 0 0 3px #d7eaf7; }
+    .paste-card.dragging { border-color: var(--blue); box-shadow: 0 0 0 3px #d7eaf7; }
+    .actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+    .button {
+      min-height: 40px; padding: 8px 14px; border: 1px solid #c8d2d9; border-radius: 10px;
+      background: white; color: #52616c; font-weight: 800; font-size: 12px;
+    }
+    .button:hover { background: #f4f7f9; }
+    .button.primary { min-width: 150px; border-color: var(--blue); background: var(--blue); color: white; }
+    .button.primary:hover { background: var(--blue-hover); }
+    .button.danger { color: #9b3434; }
+    .error {
+      margin-top: 12px; padding: 10px 12px; border: 1px solid #edb7b2; border-radius: 10px;
+      background: #fff0ef; color: #862d2d; font-size: 12px;
+    }
+    .error[hidden] { display: none; }
+    .result { margin-top: 14px; }
+    .result[hidden] { display: none; }
+    .summary {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 10px;
+    }
+    .metric { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow); }
+    .metric span { display: block; color: var(--muted); font-size: 11px; }
+    .metric b { display: block; margin-top: 1px; color: var(--navy); font-size: 23px; letter-spacing: -.025em; }
+    .sheet-panel { padding: 14px; border: 1px solid var(--line); border-radius: 17px; background: white; box-shadow: var(--shadow); }
+    .sheet-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+    .segmented { display: flex; flex-wrap: wrap; gap: 6px; }
+    .segmented button {
+      min-height: 34px; padding: 6px 10px; border: 1px solid #cad4db; border-radius: 9px;
+      background: white; color: var(--muted); font-size: 11px; font-weight: 800;
+    }
+    .segmented button.active { border-color: var(--blue); background: var(--blue); color: white; }
+    .legend { display: flex; flex-wrap: wrap; gap: 13px; margin: 0 0 10px; color: var(--muted); font-size: 11px; }
+    .legend i { display: inline-block; width: 12px; height: 12px; margin-right: 5px; border-radius: 3px; vertical-align: -2px; }
+    .legend .diff { border: 1px solid var(--red-line); background: var(--red-soft); }
+    .legend .same { border: 1px solid #d8e0e5; background: white; }
+    .sheet-compare { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 9px; }
+    .sheet-side { min-width: 0; overflow: hidden; border: 1px solid #cdd7de; border-radius: 11px; background: white; }
+    .sheet-title {
+      display: flex; justify-content: space-between; align-items: center; min-height: 40px; padding: 8px 11px;
+      border-bottom: 1px solid #cdd7de; background: #edf3f6; color: var(--navy); font-size: 12px; font-weight: 850;
+    }
+    .sheet-title span { color: var(--muted); font-size: 10px; font-weight: 650; }
+    .sheet-scroll {
+      overflow-x: auto; overflow-y: visible; overscroll-behavior-x: contain;
+      background: #f8fafb;
+    }
+    table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 11px; line-height: 1.25; }
+    th, td {
+      height: 31px; padding: 6px 7px; border-right: 1px solid #e0e5e9; border-bottom: 1px solid #e0e5e9;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: white;
+    }
+    thead th {
+      position: sticky; top: 0; z-index: 4; width: 142px; min-width: 142px; max-width: 142px;
+      border-bottom-color: #b9c6cf; background: #e8eef2; color: #536574; text-align: center; font-weight: 800;
+    }
+    thead th span { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 9px; font-weight: 600; }
+    .corner, .row-num {
+      position: sticky; left: 0; z-index: 3; width: 45px; min-width: 45px; max-width: 45px;
+      border-right-color: #b9c6cf; background: #edf2f5; color: #6c7983; text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .corner { top: 0; z-index: 6; text-align: center; }
+    .row-num.has-diff { color: var(--red); background: #fff0ef; font-weight: 850; }
+    td { width: 142px; min-width: 142px; max-width: 142px; color: #283946; cursor: default; }
+    tbody tr:nth-child(even) td:not(.different) { background: #fbfcfd; }
+    td.different {
+      border-right-color: var(--red-line); border-bottom-color: var(--red-line);
+      background: var(--red-soft); color: #8d2525; font-weight: 750;
+      box-shadow: inset 0 0 0 1px rgba(190, 53, 53, .12);
+    }
+    td.peer-hover { outline: 2px solid #c52f2f; outline-offset: -2px; }
+    td.selected { outline: 3px solid var(--blue); outline-offset: -3px; }
+    .inspector {
+      display: grid; grid-template-columns: 120px minmax(0, 1fr) 30px minmax(0, 1fr);
+      gap: 9px; align-items: center; min-height: 48px; margin-top: 9px; padding: 9px 11px;
+      border: 1px solid #d7e0e6; border-radius: 10px; background: #f8fafb; font-size: 12px;
+    }
+    .coordinate { color: var(--navy); font-weight: 850; }
+    .inspector code { overflow-wrap: anywhere; white-space: pre-wrap; color: #4b5963; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .arrow { color: #8b9aa5; text-align: center; font-weight: 900; }
+    .tag { display: inline-block; margin-top: 4px; padding: 2px 6px; border-radius: 5px; background: #f7d2cf; color: #8d2525; font-size: 9px; font-weight: 850; }
+    .empty {
+      margin-top: 14px; padding: 42px 20px; border: 1px dashed #becbd4; border-radius: 16px;
+      background: rgba(255,255,255,.68); text-align: center; color: var(--muted);
+    }
+    .empty strong { display: block; margin-bottom: 5px; color: var(--navy); font-size: 16px; }
+    .same-message {
+      margin-bottom: 10px; padding: 10px 12px; border: 1px solid #b9dccb; border-radius: 10px;
+      background: var(--green-soft); color: var(--green); font-size: 12px; font-weight: 750;
+    }
+    .same-message[hidden] { display: none; }
+    .footer { margin-top: 14px; color: var(--muted); text-align: center; font-size: 10px; }
+    @media (max-width: 930px) {
+      .paste-grid, .sheet-compare { grid-template-columns: 1fr; }
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      .inspector { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+    }
+    @media (max-width: 560px) {
+      .app { width: min(100% - 16px, 1500px); padding-top: 8px; }
+      .topbar { align-items: flex-start; padding: 16px; }
+      .privacy { display: none; }
+      .input-section, .sheet-panel { padding: 12px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .sheet-toolbar { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <div>
+          <h1>表テキスト差分比較</h1>
+          <p class="subtitle">Excelやスプレッドシートからコピーした2つの表を、セル単位で比較</p>
+        </div>
+      </div>
+      <div class="privacy">ローカル処理・外部送信なし</div>
+    </header>
+
+    <section class="input-section">
+      <div class="section-head">
+        <div>
+          <h2>2つの表を貼り付け</h2>
+          <p class="hint">ExcelやGoogleスプレッドシートで範囲をコピーし、そのまま貼り付けてください。⌘＋Enterでも比較できます。</p>
+        </div>
+      </div>
+      <div class="paste-grid">
+        <label class="paste-card">
+          <span class="paste-head"><strong>表A（左）</strong><span class="paste-meta" id="metaA">未入力</span></span>
+          <textarea id="inputA" spellcheck="false" placeholder="ここに1つ目の表を貼り付け"></textarea>
+        </label>
+        <label class="paste-card">
+          <span class="paste-head"><strong>表B（右）</strong><span class="paste-meta" id="metaB">未入力</span></span>
+          <textarea id="inputB" spellcheck="false" placeholder="ここに2つ目の表を貼り付け"></textarea>
+        </label>
+      </div>
+      <div class="actions">
+        <button class="button" id="swapButton" type="button">左右を入れ替え</button>
+        <button class="button primary" id="compareButton" type="button">比較する</button>
+        <button class="button danger" id="clearButton" type="button">入力をクリア</button>
+      </div>
+      <div class="error" id="error" role="alert" hidden></div>
+    </section>
+
+    <section class="empty" id="emptyState">
+      <strong>まだ比較していません</strong>
+      左右に表を貼り付けて「比較する」を押すと、異なるセルが赤色で表示されます。
+    </section>
+
+    <section class="result" id="result" hidden>
+      <div class="summary" id="summary"></div>
+      <div class="same-message" id="sameMessage" hidden>2つの表にセル差分はありません。</div>
+      <section class="sheet-panel">
+        <div class="sheet-toolbar">
+          <div>
+            <h2>左右スプレッドシート比較</h2>
+            <p class="hint">左右のスクロールは連動します。セルをクリックすると両方の値を確認できます。</p>
+          </div>
+          <div class="segmented" aria-label="表示する行">
+            <button class="active" type="button" data-mode="all">全行</button>
+            <button type="button" data-mode="different">差分行だけ</button>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i class="diff"></i>異なるセル</span>
+          <span><i class="same"></i>同じセル</span>
+        </div>
+        <div class="sheet-compare" id="sheetCompare">
+          <div class="sheet-side">
+            <div class="sheet-title">表A（左）<span id="shapeA"></span></div>
+            <div class="sheet-scroll" id="scrollA"><table id="sheetA"></table></div>
+          </div>
+          <div class="sheet-side">
+            <div class="sheet-title">表B（右）<span id="shapeB"></span></div>
+            <div class="sheet-scroll" id="scrollB"><table id="sheetB"></table></div>
+          </div>
+        </div>
+        <div class="inspector" id="inspector">
+          <div class="coordinate">セルを選択</div>
+          <code>左または右のセルをクリックしてください</code>
+          <div class="arrow">→</div>
+          <code>対応する値をここに表示します</code>
+        </div>
+      </section>
+    </section>
+
+    <footer class="footer">入力したデータはブラウザ内だけで処理され、保存・送信されません。</footer>
+  </main>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const inputA = $("#inputA");
+    const inputB = $("#inputB");
+    let comparison = null;
+    let displayMode = "all";
+    let syncing = false;
+
+    const escapeHtml = (value) => String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+
+    function columnLetter(index) {
+      let value = index + 1;
+      let result = "";
+      while (value > 0) {
+        value -= 1;
+        result = String.fromCharCode(65 + (value % 26)) + result;
+        value = Math.floor(value / 26);
+      }
+      return result;
+    }
+
+    function parseTable(text) {
+      const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      if (!normalized.trim()) return { rows: [], cols: 0 };
+      const lines = normalized.split("\n");
+      while (lines.length && lines.at(-1) === "") lines.pop();
+      const hasTabs = lines.some((line) => line.includes("\t"));
+      const rows = lines.map((line) => hasTabs ? line.split("\t") : [line]);
+      while (rows.length && rows.at(-1).every((cell) => cell === "")) rows.pop();
+      const cols = Math.max(0, ...rows.map((row) => row.length));
+      return { rows, cols };
+    }
+
+    function normalizeSpace(value) {
+      return value.replace(/[\s\u3000]+/g, " ").trim();
+    }
+
+    function classify(a, b) {
+      if (a === b) return "same";
+      if (a === "") return "added";
+      if (b === "") return "removed";
+      if (normalizeSpace(a) === normalizeSpace(b)) return "spacing";
+      if (/^\d+$/.test(a) && /^\d+$/.test(b) &&
+          a.replace(/^0+(?=\d)/, "") === b.replace(/^0+(?=\d)/, "")) {
+        return "leading-zero";
+      }
+      if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(a) &&
+          /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(b)) return "date";
+      return "changed";
+    }
+
+    function buildComparison() {
+      const a = parseTable(inputA.value);
+      const b = parseTable(inputB.value);
+      if (!a.rows.length || !b.rows.length) {
+        throw new Error("左右両方に比較する表を貼り付けてください。");
+      }
+      const rowCount = Math.max(a.rows.length, b.rows.length);
+      const colCount = Math.max(a.cols, b.cols);
+      const gridA = [];
+      const gridB = [];
+      const categories = [];
+      const changedRows = new Set();
+      let changedCells = 0;
+      let added = 0;
+      let removed = 0;
+      let leadingZero = 0;
+
+      for (let row = 0; row < rowCount; row += 1) {
+        const valuesA = [];
+        const valuesB = [];
+        const rowCategories = [];
+        for (let col = 0; col < colCount; col += 1) {
+          const valueA = a.rows[row]?.[col] ?? "";
+          const valueB = b.rows[row]?.[col] ?? "";
+          const category = classify(valueA, valueB);
+          valuesA.push(valueA);
+          valuesB.push(valueB);
+          rowCategories.push(category);
+          if (category !== "same") {
+            changedCells += 1;
+            changedRows.add(row);
+            if (category === "added") added += 1;
+            if (category === "removed") removed += 1;
+            if (category === "leading-zero") leadingZero += 1;
+          }
+        }
+        gridA.push(valuesA);
+        gridB.push(valuesB);
+        categories.push(rowCategories);
+      }
+      return { a, b, rowCount, colCount, gridA, gridB, categories,
+        changedRows, changedCells, added, removed, leadingZero };
+    }
+
+    function columnLabel(col) {
+      const header = comparison.gridB[1]?.[col] || comparison.gridA[1]?.[col] ||
+        comparison.gridB[0]?.[col] || comparison.gridA[0]?.[col] || "";
+      return header;
+    }
+
+    function renderTable(selector, grid) {
+      const indexes = grid.map((_, index) => index)
+        .filter((index) => displayMode === "all" || comparison.changedRows.has(index));
+      const head = '<thead><tr><th class="corner"></th>' +
+        Array.from({ length: comparison.colCount }, (_, col) => {
+          const label = columnLabel(col);
+          return '<th title="' + escapeHtml(label || columnLetter(col)) + '">' +
+            columnLetter(col) + '<span>' + escapeHtml(label) + '</span></th>';
+        }).join("") + '</tr></thead>';
+      const body = '<tbody>' + indexes.map((row) => {
+        const cells = grid[row].map((value, col) => {
+          const category = comparison.categories[row][col];
+          const different = category !== "same";
+          const coordinate = columnLetter(col) + (row + 1);
+          return '<td class="' + (different ? "different " + category : "") +
+            '" data-cell="' + row + ":" + col + '" data-row="' + row +
+            '" data-col="' + col + '" title="' +
+            escapeHtml(coordinate + "\n" + (value || "（空欄）")) + '">' +
+            (value === "" ? "&nbsp;" : escapeHtml(value)) + '</td>';
+        }).join("");
+        return '<tr><th class="row-num ' +
+          (comparison.changedRows.has(row) ? "has-diff" : "") + '">' +
+          (row + 1) + '</th>' + cells + '</tr>';
+      }).join("") + '</tbody>';
+      $(selector).innerHTML = head + body;
+    }
+
+    function renderResults() {
+      const nf = new Intl.NumberFormat("ja-JP");
+      const metrics = [
+        ["変更セル", comparison.changedCells],
+        ["変更行", comparison.changedRows.size],
+        ["空欄↔値", comparison.added + comparison.removed],
+        ["先頭ゼロ差", comparison.leadingZero]
+      ];
+      $("#summary").innerHTML = metrics.map(([label, value]) =>
+        '<div class="metric"><span>' + label + '</span><b>' +
+        nf.format(value) + '</b></div>'
+      ).join("");
+      $("#shapeA").textContent = comparison.a.rows.length + "行 × " + comparison.a.cols + "列";
+      $("#shapeB").textContent = comparison.b.rows.length + "行 × " + comparison.b.cols + "列";
+      $("#sameMessage").hidden = comparison.changedCells !== 0;
+      renderTable("#sheetA", comparison.gridA);
+      renderTable("#sheetB", comparison.gridB);
+      $("#scrollA").scrollTop = 0;
+      $("#scrollB").scrollTop = 0;
+      $("#scrollA").scrollLeft = 0;
+      $("#scrollB").scrollLeft = 0;
+      $("#emptyState").hidden = true;
+      $("#result").hidden = false;
+      $("#error").hidden = true;
+      $("#result").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function compare() {
+      try {
+        comparison = buildComparison();
+        renderResults();
+      } catch (error) {
+        $("#error").textContent = error.message;
+        $("#error").hidden = false;
+      }
+    }
+
+    function updateMeta(input, target) {
+      const parsed = parseTable(input.value);
+      target.textContent = parsed.rows.length
+        ? parsed.rows.length + "行 × " + parsed.cols + "列"
+        : "未入力";
+    }
+
+    function updateAllMeta() {
+      updateMeta(inputA, $("#metaA"));
+      updateMeta(inputB, $("#metaB"));
+    }
+
+    function selectCell(row, col) {
+      document.querySelectorAll("td.selected").forEach((cell) =>
+        cell.classList.remove("selected")
+      );
+      document.querySelectorAll('[data-cell="' + row + ':' + col + '"]').forEach(
+        (cell) => cell.classList.add("selected")
+      );
+      const valueA = comparison.gridA[row][col];
+      const valueB = comparison.gridB[row][col];
+      const category = comparison.categories[row][col];
+      const labels = {
+        added: "空欄 → 値", removed: "値 → 空欄", spacing: "空白差",
+        "leading-zero": "先頭ゼロ", date: "日付変更", changed: "値変更"
+      };
+      $("#inspector").innerHTML =
+        '<div class="coordinate">' + columnLetter(col) + (row + 1) +
+        '<br><small>' + escapeHtml(columnLabel(col)) + '</small></div>' +
+        '<code>' + (valueA === "" ? "（空欄）" : escapeHtml(valueA)) + '</code>' +
+        '<div class="arrow">→</div><code>' +
+        (valueB === "" ? "（空欄）" : escapeHtml(valueB)) +
+        (category === "same" ? "" : '<br><span class="tag">' +
+        labels[category] + '</span>') + '</code>';
+    }
+
+    function syncScroll(source, target) {
+      source.addEventListener("scroll", () => {
+        if (syncing) return;
+        syncing = true;
+        target.scrollTop = source.scrollTop;
+        target.scrollLeft = source.scrollLeft;
+        requestAnimationFrame(() => { syncing = false; });
+      }, { passive: true });
+    }
+
+    function setupDrop(textarea) {
+      const card = textarea.closest(".paste-card");
+      card.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        card.classList.add("dragging");
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("dragging"));
+      card.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        card.classList.remove("dragging");
+        const file = event.dataTransfer.files[0];
+        if (!file) return;
+        textarea.value = await file.text();
+        updateAllMeta();
+      });
+    }
+
+    [inputA, inputB].forEach((input) => {
+      input.addEventListener("input", updateAllMeta);
+      input.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") compare();
+      });
+      setupDrop(input);
+    });
+
+    $("#compareButton").addEventListener("click", compare);
+    $("#swapButton").addEventListener("click", () => {
+      const value = inputA.value;
+      inputA.value = inputB.value;
+      inputB.value = value;
+      updateAllMeta();
+      if (comparison) compare();
+    });
+    $("#clearButton").addEventListener("click", () => {
+      inputA.value = "";
+      inputB.value = "";
+      comparison = null;
+      updateAllMeta();
+      $("#result").hidden = true;
+      $("#emptyState").hidden = false;
+      $("#error").hidden = true;
+      inputA.focus();
+    });
+
+    document.querySelectorAll("[data-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        displayMode = button.dataset.mode;
+        document.querySelectorAll("[data-mode]").forEach((item) =>
+          item.classList.toggle("active", item === button)
+        );
+        if (comparison) {
+          renderTable("#sheetA", comparison.gridA);
+          renderTable("#sheetB", comparison.gridB);
+        }
+      });
+    });
+
+    $("#sheetCompare").addEventListener("mouseover", (event) => {
+      const cell = event.target.closest("td[data-cell]");
+      if (!cell) return;
+      document.querySelectorAll('[data-cell="' + cell.dataset.cell + '"]').forEach(
+        (peer) => peer.classList.add("peer-hover")
+      );
+    });
+    $("#sheetCompare").addEventListener("mouseout", (event) => {
+      const cell = event.target.closest("td[data-cell]");
+      if (!cell) return;
+      document.querySelectorAll('[data-cell="' + cell.dataset.cell + '"]').forEach(
+        (peer) => peer.classList.remove("peer-hover")
+      );
+    });
+    $("#sheetCompare").addEventListener("click", (event) => {
+      const cell = event.target.closest("td[data-cell]");
+      if (!cell || !comparison) return;
+      selectCell(Number(cell.dataset.row), Number(cell.dataset.col));
+    });
+
+    syncScroll($("#scrollA"), $("#scrollB"));
+    syncScroll($("#scrollB"), $("#scrollA"));
+    updateAllMeta();
+  </script>
+</body>
+</html>
