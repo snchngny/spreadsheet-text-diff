@@ -44,13 +44,20 @@ node tests/browser.mjs 2067c3b
 
 ## 自動deploy
 
-GitHub Actionsでテスト後、Cloudflare Pagesの既存Direct Upload projectへdeployします。Direct Upload projectはGit連携へ切り替えられないため、Wranglerで同じprojectへアップロードします。既存projectのURLとカスタムドメインを引き継げます。Cloudflare projectの本番branchは`main`に設定してください。
+Cloudflare Workers BuildsでこのGitHub repoを既存Worker `cool-wood-8a1d`へ接続し、`main` branchから自動deployします。Worker名は[wrangler.jsonc](wrangler.jsonc)の`name`と一致させます。同じWorkerへ接続することで、既存のURLを維持できます。GitHub Actionsはテストとpackage確認のみを実行します。
 
-- `main`へのpushと、`main`を対象にした手動実行だけがdeploy対象です。Pull requestではテストだけを実行します
-- GitHubのRepository variablesに`CLOUDFLARE_ACCOUNT_ID`と`CLOUDFLARE_PROJECT_NAME`、Repository secretsに`CLOUDFLARE_API_TOKEN`を設定してください
-- workflowはテスト成功後に`dist/`を作成し、`index.html`だけをdeployします
+- CloudflareのBuild設定でproduction branchを`main`にし、preview buildsを無効にします
+- Build command: `if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then git fetch --unshallow; fi && node --test tests/*.test.mjs && node scripts/build.mjs`
+- Deploy command: `npx --yes wrangler@4.151.3 deploy`
+- `scripts/build.mjs`は`index.html`だけを`dist/`へコピーします。未知のファイルが`dist/`にある場合は削除せず、buildを失敗させます
+- Workers Builds側で認証するため、GitHub secretsやvariablesにCloudflare API tokenやaccount IDを追加する必要はありません。Cloudflare account emailもrepoへ記載しません
 
-ローカルでテストを実行する場合は、Node.js 24を使ってください。baseline commitも参照するため、CIはGit履歴全体をcheckoutします。
+ローカル検証はNode.js 24で次を実行します。baseline commit参照のため、Git履歴がshallowな場合は全履歴を取得してからテストしてください。
+
+```powershell
+node --test tests/*.test.mjs
+node scripts/build.mjs
+```
 
 ### 性能確認結果（2026-10-21）
 
