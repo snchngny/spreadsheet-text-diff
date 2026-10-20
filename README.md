@@ -42,6 +42,16 @@ node tests/browser.mjs 2067c3b
 
 他の試験を同時に実行せず、同じブラウザ・画面サイズで比較してください。データ生成時間は計測対象外です。入力欄への値の設定と`input`イベントで貼り付け後の処理を再現するため、OSのクリップボード処理時間や貼り付けの取り消し履歴は含みません。
 
+## 自動deploy
+
+GitHub Actionsでテスト後、Cloudflare Pagesの既存Direct Upload projectへdeployします。Direct Upload projectはGit連携へ切り替えられないため、Wranglerで同じprojectへアップロードします。既存projectのURLとカスタムドメインを引き継げます。Cloudflare projectの本番branchは`main`に設定してください。
+
+- `main`へのpushと、`main`を対象にした手動実行だけがdeploy対象です。Pull requestではテストだけを実行します
+- GitHubのRepository variablesに`CLOUDFLARE_ACCOUNT_ID`と`CLOUDFLARE_PROJECT_NAME`、Repository secretsに`CLOUDFLARE_API_TOKEN`を設定してください
+- workflowはテスト成功後に`dist/`を作成し、`index.html`だけをdeployします
+
+ローカルでテストを実行する場合は、Node.js 24を使ってください。baseline commitも参照するため、CIはGit履歴全体をcheckoutします。
+
 ### 性能確認結果（2026-10-21）
 
 Windows・Headless Chrome 155、画面1881×2041、20列の合成文字列、100行ごとに1セル変更で測定。2つの表は同じサイズです。時間はこの環境での実測で、対応容量の保証値ではありません。
