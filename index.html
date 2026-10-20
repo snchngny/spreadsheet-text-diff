@@ -121,9 +121,11 @@
     }
     .sheet-title span { color: var(--muted); font-size: 10px; font-weight: 650; }
     .sheet-scroll {
-      overflow-x: auto; overflow-y: visible; overscroll-behavior-x: contain;
+      height: 500px; overflow: auto; overscroll-behavior: contain; overflow-anchor: none;
       background: #f8fafb;
     }
+    .virtual-space { width: auto; padding: 0; border: 0; min-width: 0; max-width: none; overflow: hidden; }
+    tbody .virtual-space { height: 1px; }
     table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 11px; line-height: 1.25; }
     th, td {
       height: 31px; padding: 6px 7px; border-right: 1px solid #e0e5e9; border-bottom: 1px solid #e0e5e9;
@@ -272,297 +274,325 @@
     const $ = (selector) => document.querySelector(selector);
     const inputA = $("#inputA");
     const inputB = $("#inputB");
+    const ROW_HEIGHT = 31;
+    const COL_WIDTH = 142;
+    const ROW_HEADER_WIDTH = 45;
+    const OVERSCAN = 5;
     let comparison = null;
     let displayMode = "all";
     let syncing = false;
+    let revision = 0;
+    let renderToken = 0;
+    let cellToken = 0;
+    let metaTimer = 0;
+    let renderFrame = 0;
+    const inputVersions = [0, 0];
+    const sentVersions = [-1, -1];
+    const dirtyInputs = new Set([0, 1]);
+    const tables = [$("#sheetA"), $("#sheetB")];
+    const scrolls = [$("#scrollA"), $("#scrollB")];
 
     const escapeHtml = (value) => String(value)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
-
+      .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
     function columnLetter(index) {
-      let value = index + 1;
-      let result = "";
-      while (value > 0) {
-        value -= 1;
-        result = String.fromCharCode(65 + (value % 26)) + result;
-        value = Math.floor(value / 26);
-      }
+      let value = index + 1, result = "";
+      while (value > 0) { value -= 1; result = String.fromCharCode(65 + value % 26) + result; value = Math.floor(value / 26); }
       return result;
     }
 
-    function parseTable(text) {
-      const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-      if (!normalized.trim()) return { rows: [], cols: 0 };
-      const lines = normalized.split("\n");
-      while (lines.length && lines.at(-1) === "") lines.pop();
-      const hasTabs = lines.some((line) => line.includes("\t"));
-      const rows = lines.map((line) => hasTabs ? line.split("\t") : [line]);
-      while (rows.length && rows.at(-1).every((cell) => cell === "")) rows.pop();
-      const cols = Math.max(0, ...rows.map((row) => row.length));
-      return { rows, cols };
-    }
-
-    function normalizeSpace(value) {
-      return value.replace(/[\s\u3000]+/g, " ").trim();
-    }
-
-    function classify(a, b) {
-      if (a === b) return "same";
-      if (a === "") return "added";
-      if (b === "") return "removed";
-      if (normalizeSpace(a) === normalizeSpace(b)) return "spacing";
-      if (/^\d+$/.test(a) && /^\d+$/.test(b) &&
-          a.replace(/^0+(?=\d)/, "") === b.replace(/^0+(?=\d)/, "")) {
-        return "leading-zero";
+    const workerSource = String.raw`
+      let parsed = [null, null], latest = null, revision = 0;
+      function parseTable(text) {
+        const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        if (!normalized.trim()) return { rows: [], cols: 0 };
+        const lines = normalized.split("\n");
+        while (lines.length && lines[lines.length - 1] === "") lines.pop();
+        const hasTabs = lines.some(line => line.includes("\t"));
+        const rows = lines.map(line => hasTabs ? line.split("\t") : [line]);
+        while (rows.length && rows[rows.length - 1].every(cell => cell === "")) rows.pop();
+        let cols = 0;
+        for (const row of rows) if (row.length > cols) cols = row.length;
+        return { rows, cols };
       }
-      if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(a) &&
-          /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(b)) return "date";
-      return "changed";
-    }
-
-    function buildComparison() {
-      const a = parseTable(inputA.value);
-      const b = parseTable(inputB.value);
-      if (!a.rows.length || !b.rows.length) {
-        throw new Error("左右両方に比較する表を貼り付けてください。");
+      function normalizeSpace(value) { return value.replace(/[\s\u3000]+/g, " ").trim(); }
+      function classify(a, b) {
+        if (a === b) return "same";
+        if (a === "") return "added";
+        if (b === "") return "removed";
+        if (normalizeSpace(a) === normalizeSpace(b)) return "spacing";
+        if (/^\d+$/.test(a) && /^\d+$/.test(b) && a.replace(/^0+(?=\d)/, "") === b.replace(/^0+(?=\d)/, "")) return "leading-zero";
+        if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(a) && /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(b)) return "date";
+        return "changed";
       }
-      const rowCount = Math.max(a.rows.length, b.rows.length);
-      const colCount = Math.max(a.cols, b.cols);
-      const gridA = [];
-      const gridB = [];
-      const categories = [];
-      const changedRows = new Set();
-      let changedCells = 0;
-      let added = 0;
-      let removed = 0;
-      let leadingZero = 0;
-
-      for (let row = 0; row < rowCount; row += 1) {
-        const valuesA = [];
-        const valuesB = [];
-        const rowCategories = [];
-        for (let col = 0; col < colCount; col += 1) {
-          const valueA = a.rows[row]?.[col] ?? "";
-          const valueB = b.rows[row]?.[col] ?? "";
-          const category = classify(valueA, valueB);
-          valuesA.push(valueA);
-          valuesB.push(valueB);
-          rowCategories.push(category);
-          if (category !== "same") {
-            changedCells += 1;
-            changedRows.add(row);
-            if (category === "added") added += 1;
-            if (category === "removed") removed += 1;
-            if (category === "leading-zero") leadingZero += 1;
+      function value(side, row, col) { return parsed[side].rows[row]?.[col] ?? ""; }
+      function label(col) { return value(1, 1, col) || value(0, 1, col) || value(1, 0, col) || value(0, 0, col) || ""; }
+      function visibleIndex(offset, mode) { return mode === "all" ? (offset < latest.rowCount ? offset : -1) : (latest.diffRows[offset] ?? -1); }
+      function visibleCount(mode) { return mode === "all" ? latest.rowCount : latest.changedRowCount; }
+      function sendViewport(message) {
+        if (!latest || message.revision !== revision) return;
+        const mode = message.mode;
+        const count = visibleCount(mode);
+        const rows = [];
+        for (let offset = message.rowStart; offset < Math.min(count, message.rowEnd); offset += 1) {
+          const row = visibleIndex(offset, mode);
+          if (row < 0) break;
+          const a = [], b = [], categories = [];
+          for (let col = message.colStart; col < Math.min(latest.colCount, message.colEnd); col += 1) {
+            const va = value(0, row, col), vb = value(1, row, col);
+            a.push(va); b.push(vb); categories.push(classify(va, vb));
           }
+          rows.push({ row, a, b, categories, changed: !!latest.changedRows[row] });
         }
-        gridA.push(valuesA);
-        gridB.push(valuesB);
-        categories.push(rowCategories);
+        const labels = [];
+        for (let col = message.colStart; col < Math.min(latest.colCount, message.colEnd); col += 1) labels.push(label(col));
+        postMessage({ type: "viewport", revision, token: message.token, rowCount: count, colCount: latest.colCount,
+          rowStart: message.rowStart, colStart: message.colStart, labels, rows });
       }
-      return { a, b, rowCount, colCount, gridA, gridB, categories,
-        changedRows, changedCells, added, removed, leadingZero };
-    }
-
-    function columnLabel(col) {
-      const header = comparison.gridB[1]?.[col] || comparison.gridA[1]?.[col] ||
-        comparison.gridB[0]?.[col] || comparison.gridA[0]?.[col] || "";
-      return header;
-    }
-
-    function renderTable(selector, grid) {
-      const indexes = grid.map((_, index) => index)
-        .filter((index) => displayMode === "all" || comparison.changedRows.has(index));
-      const head = '<thead><tr><th class="corner"></th>' +
-        Array.from({ length: comparison.colCount }, (_, col) => {
-          const label = columnLabel(col);
-          return '<th title="' + escapeHtml(label || columnLetter(col)) + '">' +
-            columnLetter(col) + '<span>' + escapeHtml(label) + '</span></th>';
-        }).join("") + '</tr></thead>';
-      const body = '<tbody>' + indexes.map((row) => {
-        const cells = grid[row].map((value, col) => {
-          const category = comparison.categories[row][col];
-          const different = category !== "same";
-          const coordinate = columnLetter(col) + (row + 1);
-          return '<td class="' + (different ? "different " + category : "") +
-            '" data-cell="' + row + ":" + col + '" data-row="' + row +
-            '" data-col="' + col + '" title="' +
-            escapeHtml(coordinate + "\n" + (value || "（空欄）")) + '">' +
-            (value === "" ? "&nbsp;" : escapeHtml(value)) + '</td>';
-        }).join("");
-        return '<tr><th class="row-num ' +
-          (comparison.changedRows.has(row) ? "has-diff" : "") + '">' +
-          (row + 1) + '</th>' + cells + '</tr>';
-      }).join("") + '</tbody>';
-      $(selector).innerHTML = head + body;
-    }
-
-    function renderResults() {
-      const nf = new Intl.NumberFormat("ja-JP");
-      const metrics = [
-        ["変更セル", comparison.changedCells],
-        ["変更行", comparison.changedRows.size],
-        ["空欄↔値", comparison.added + comparison.removed],
-        ["先頭ゼロ差", comparison.leadingZero]
-      ];
-      $("#summary").innerHTML = metrics.map(([label, value]) =>
-        '<div class="metric"><span>' + label + '</span><b>' +
-        nf.format(value) + '</b></div>'
-      ).join("");
-      $("#shapeA").textContent = comparison.a.rows.length + "行 × " + comparison.a.cols + "列";
-      $("#shapeB").textContent = comparison.b.rows.length + "行 × " + comparison.b.cols + "列";
-      $("#sameMessage").hidden = comparison.changedCells !== 0;
-      renderTable("#sheetA", comparison.gridA);
-      renderTable("#sheetB", comparison.gridB);
-      $("#scrollA").scrollTop = 0;
-      $("#scrollB").scrollTop = 0;
-      $("#scrollA").scrollLeft = 0;
-      $("#scrollB").scrollLeft = 0;
-      $("#emptyState").hidden = true;
-      $("#result").hidden = false;
-      $("#error").hidden = true;
-      $("#result").scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-
-    function compare() {
-      try {
-        comparison = buildComparison();
-        renderResults();
-      } catch (error) {
-        $("#error").textContent = error.message;
-        $("#error").hidden = false;
-      }
-    }
-
-    function updateMeta(input, target) {
-      const parsed = parseTable(input.value);
-      target.textContent = parsed.rows.length
-        ? parsed.rows.length + "行 × " + parsed.cols + "列"
-        : "未入力";
-    }
-
-    function updateAllMeta() {
-      updateMeta(inputA, $("#metaA"));
-      updateMeta(inputB, $("#metaB"));
-    }
-
-    function selectCell(row, col) {
-      document.querySelectorAll("td.selected").forEach((cell) =>
-        cell.classList.remove("selected")
-      );
-      document.querySelectorAll('[data-cell="' + row + ':' + col + '"]').forEach(
-        (cell) => cell.classList.add("selected")
-      );
-      const valueA = comparison.gridA[row][col];
-      const valueB = comparison.gridB[row][col];
-      const category = comparison.categories[row][col];
-      const labels = {
-        added: "空欄 → 値", removed: "値 → 空欄", spacing: "空白差",
-        "leading-zero": "先頭ゼロ", date: "日付変更", changed: "値変更"
+      onmessage = event => {
+        const m = event.data;
+        try {
+          if (m.type === "clear") {
+            latest = null;
+            revision = m.revision;
+          } else if (m.type === "meta") {
+            parsed[m.side] = parseTable(m.text);
+            postMessage({ type: "meta", version: m.version, side: m.side, rows: parsed[m.side].rows.length, cols: parsed[m.side].cols });
+          } else if (m.type === "compare") {
+            revision = m.revision;
+            if (m.a !== undefined) parsed[0] = parseTable(m.a);
+            if (m.b !== undefined) parsed[1] = parseTable(m.b);
+            if (!parsed[0].rows.length || !parsed[1].rows.length) throw new Error("左右両方に比較する表を貼り付けてください。");
+            const rowCount = Math.max(parsed[0].rows.length, parsed[1].rows.length);
+            const colCount = Math.max(parsed[0].cols, parsed[1].cols);
+            const changedRows = new Uint8Array(rowCount), diffRows = [];
+            let changedCells = 0, changedRowCount = 0, added = 0, removed = 0, leadingZero = 0;
+            for (let row = 0; row < rowCount; row += 1) {
+              let changed = false;
+              for (let col = 0; col < colCount; col += 1) {
+                const category = classify(value(0, row, col), value(1, row, col));
+                if (category === "same") continue;
+                changedCells += 1; changed = true;
+                if (category === "added") added += 1;
+                if (category === "removed") removed += 1;
+                if (category === "leading-zero") leadingZero += 1;
+              }
+              if (changed) { changedRows[row] = 1; diffRows.push(row); changedRowCount += 1; }
+            }
+            latest = { rowCount, colCount, changedRows, diffRows, changedRowCount, changedCells, added, removed, leadingZero };
+            postMessage({ type: "compared", revision, aRows: parsed[0].rows.length, aCols: parsed[0].cols,
+              bRows: parsed[1].rows.length, bCols: parsed[1].cols, rowCount, colCount, changedRowCount, changedCells, added, removed, leadingZero });
+          } else if (m.type === "viewport") sendViewport(m);
+          else if (m.type === "cell" && latest && m.revision === revision) {
+            const a = value(0, m.row, m.col), b = value(1, m.row, m.col);
+            postMessage({ type: "cell", revision, token: m.token, row: m.row, col: m.col, a, b, category: classify(a, b), label: label(m.col) });
+          }
+        } catch (error) { postMessage({ type: "error", revision: m.revision, request: m.type, message: error.message || "比較処理に失敗しました。" }); }
       };
-      $("#inspector").innerHTML =
-        '<div class="coordinate">' + columnLetter(col) + (row + 1) +
-        '<br><small>' + escapeHtml(columnLabel(col)) + '</small></div>' +
-        '<code>' + (valueA === "" ? "（空欄）" : escapeHtml(valueA)) + '</code>' +
-        '<div class="arrow">→</div><code>' +
-        (valueB === "" ? "（空欄）" : escapeHtml(valueB)) +
-        (category === "same" ? "" : '<br><span class="tag">' +
-        labels[category] + '</span>') + '</code>';
+    `;
+    let worker;
+    try {
+      worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" })));
+    } catch (error) {
+      $("#error").textContent = "比較用Workerを起動できませんでした。このブラウザ設定では処理を開始できません。";
+      $("#error").hidden = false;
     }
 
+    function showError(message) { $("#error").textContent = message; $("#error").hidden = false; }
+    function sendMeta() {
+      if (!worker) return;
+      for (const side of dirtyInputs) {
+        worker.postMessage({ type: "meta", side, text: [inputA, inputB][side].value,
+          version: inputVersions[side], revision });
+        sentVersions[side] = inputVersions[side];
+      }
+      dirtyInputs.clear();
+    }
+    function invalidate() {
+      revision += 1; comparison = null;
+      if (renderFrame) cancelAnimationFrame(renderFrame);
+      renderFrame = 0;
+      cellToken += 1;
+      $('#compareButton').disabled = false;
+      $('#compareButton').removeAttribute('aria-busy');
+      $("#result").hidden = true; $("#emptyState").hidden = false;
+      $('#inspector').innerHTML = '<div class="coordinate">セルを選択</div><code>左または右のセルをクリックしてください</code><div class="arrow">→</div><code>対応する値をここに表示します</code>';
+    }
+    function onInput() {
+      const side = this === inputA ? 0 : 1;
+      inputVersions[side] += 1;
+      dirtyInputs.add(side);
+      $('#meta' + (side === 0 ? 'A' : 'B')).textContent = '集計中…';
+      invalidate();
+      $('#error').hidden = !!worker;
+      clearTimeout(metaTimer);
+      metaTimer = setTimeout(sendMeta, 180);
+    }
+    function viewportRequest() {
+      if (!comparison || !worker) return;
+      const token = ++renderToken;
+      const scroll = scrolls[0];
+      const rowStart = Math.max(0, Math.floor(Math.max(0, scroll.scrollTop - ROW_HEIGHT) / ROW_HEIGHT) - OVERSCAN);
+      const visibleRows = Math.ceil(scroll.clientHeight / ROW_HEIGHT) + OVERSCAN * 2 + 1;
+      const colStart = Math.max(0, Math.floor(Math.max(0, scroll.scrollLeft - ROW_HEADER_WIDTH) / COL_WIDTH) - OVERSCAN);
+      const visibleCols = Math.ceil(scroll.clientWidth / COL_WIDTH) + OVERSCAN * 2 + 1;
+      worker.postMessage({ type: "viewport", revision, token, mode: displayMode, rowStart,
+        rowEnd: rowStart + visibleRows, colStart, colEnd: colStart + visibleCols });
+    }
+    function scheduleViewport() { if (!renderFrame) renderFrame = requestAnimationFrame(() => { renderFrame = 0; viewportRequest(); }); }
+
+    function renderSide(table, side, data) {
+      table.style.width = (ROW_HEADER_WIDTH + data.colCount * COL_WIDTH) + 'px';
+      const beforeCols = data.colStart;
+      const afterCols = data.colCount - beforeCols - data.labels.length;
+      const colgroup = '<colgroup><col style="width:' + ROW_HEADER_WIDTH + 'px"><col style="width:' + (beforeCols * COL_WIDTH) + 'px">' +
+        data.labels.map(() => '<col style="width:' + COL_WIDTH + 'px">').join("") + '<col style="width:' + (afterCols * COL_WIDTH) + 'px"></colgroup>';
+      const header = '<thead><tr><th class="corner"></th><th class="virtual-space" aria-hidden="true"></th>' +
+        data.labels.map((label, i) => { const col = data.colStart + i; return '<th title="' + escapeHtml(label || columnLetter(col)) + '">' +
+          columnLetter(col) + '<span>' + escapeHtml(label) + '</span></th>'; }).join("") +
+        '<th class="virtual-space" aria-hidden="true"></th></tr></thead>';
+      const top = data.rowStart;
+      const bottom = data.rowCount - top - data.rows.length;
+      const spacer = (height) => height > 0 ? '<tr class="virtual-row" aria-hidden="true"><td colspan="' + (data.labels.length + 3) + '" style="height:' + (height * ROW_HEIGHT) + 'px;padding:0;border:0"></td></tr>' : '';
+      const rows = data.rows.map(item => {
+        const vals = side === 0 ? item.a : item.b;
+        const cells = vals.map((value, i) => {
+          const col = data.colStart + i, category = item.categories[i], different = category !== "same";
+          const coordinate = columnLetter(col) + (item.row + 1);
+          return '<td class="' + (different ? 'different ' + category : '') + (comparison.selected?.row === item.row && comparison.selected?.col === col ? ' selected' : '') +
+            '" data-cell="' + item.row + ':' + col + '" data-row="' + item.row + '" data-col="' + col + '" title="' + escapeHtml(coordinate + '\n' + (value || '（空欄）')) + '">' +
+            (value === '' ? '&nbsp;' : escapeHtml(value)) + '</td>';
+        }).join("");
+        return '<tr><th class="row-num ' + (item.changed ? 'has-diff' : '') + '">' + (item.row + 1) + '</th><td class="virtual-space" aria-hidden="true"></td>' + cells + '<td class="virtual-space" aria-hidden="true"></td></tr>';
+      }).join("");
+      table.innerHTML = colgroup + header + '<tbody>' + spacer(top) + rows + spacer(bottom) + '</tbody>';
+    }
+    function handleViewport(data) {
+      if (!comparison || data.revision !== revision || data.token !== renderToken) return;
+      renderSide(tables[0], 0, data); renderSide(tables[1], 1, data);
+      $('#compareButton').disabled = false;
+      $('#compareButton').removeAttribute('aria-busy');
+    }
+    function renderResults() {
+      const nf = new Intl.NumberFormat('ja-JP');
+      const metrics = [['変更セル', comparison.changedCells], ['変更行', comparison.changedRowCount],
+        ['空欄↔値', comparison.added + comparison.removed], ['先頭ゼロ差', comparison.leadingZero]];
+      $('#summary').innerHTML = metrics.map(([label, value]) => '<div class="metric"><span>' + label + '</span><b>' + nf.format(value) + '</b></div>').join('');
+      $('#shapeA').textContent = comparison.aRows + '行 × ' + comparison.aCols + '列';
+      $('#shapeB').textContent = comparison.bRows + '行 × ' + comparison.bCols + '列';
+      $('#sameMessage').hidden = comparison.changedCells !== 0;
+      $('#emptyState').hidden = true; $('#result').hidden = false; $('#error').hidden = true;
+      $('#scrollA').scrollTop = $('#scrollB').scrollTop = 0;
+      $('#scrollA').scrollLeft = $('#scrollB').scrollLeft = 0;
+      viewportRequest();
+      $('#result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function compare() {
+      if (!worker) { showError('比較用Workerを起動できませんでした。このブラウザ設定では処理を開始できません。'); return; }
+      clearTimeout(metaTimer);
+      invalidate();
+      $('#error').hidden = true;
+      $('#compareButton').disabled = true;
+      $('#compareButton').setAttribute('aria-busy', 'true');
+      const message = { type: 'compare', revision };
+      for (const [side, key] of [[0, 'a'], [1, 'b']]) {
+        if (sentVersions[side] !== inputVersions[side]) message[key] = [inputA, inputB][side].value;
+        sentVersions[side] = inputVersions[side];
+      }
+      dirtyInputs.clear();
+      worker.postMessage(message);
+    }
+    function selectCell(row, col) {
+      const token = ++cellToken;
+      comparison.selected = { row, col };
+      document.querySelectorAll('td.selected').forEach(cell => cell.classList.remove('selected'));
+      document.querySelectorAll('td[data-row="' + row + '"][data-col="' + col + '"]').forEach(cell => cell.classList.add('selected'));
+      worker.postMessage({ type: 'cell', revision, token, row, col });
+    }
+    function showCell(message) {
+      if (!comparison || message.revision !== revision || message.token !== cellToken) return;
+      const labels = { added: '空欄 → 値', removed: '値 → 空欄', spacing: '空白差', 'leading-zero': '先頭ゼロ', date: '日付変更', changed: '値変更' };
+      $('#inspector').innerHTML = '<div class="coordinate">' + columnLetter(message.col) + (message.row + 1) + '<br><small>' + escapeHtml(message.label) + '</small></div>' +
+        '<code>' + (message.a === '' ? '（空欄）' : escapeHtml(message.a)) + '</code><div class="arrow">→</div><code>' +
+        (message.b === '' ? '（空欄）' : escapeHtml(message.b)) + (message.category === 'same' ? '' : '<br><span class="tag">' + labels[message.category] + '</span>') + '</code>';
+    }
+    if (worker) {
+      worker.onmessage = event => {
+        const m = event.data;
+        if (m.type === 'meta') {
+          if (m.version === inputVersions[m.side]) $('#meta' + (m.side === 0 ? 'A' : 'B')).textContent = m.rows ? m.rows + '行 × ' + m.cols + '列' : '未入力';
+          return;
+        }
+        if (m.type === 'error') { if (m.revision === revision) { sentVersions.fill(-1); $('#compareButton').disabled = false; $('#compareButton').removeAttribute('aria-busy'); showError(m.message); } return; }
+        if (m.revision !== revision) return;
+        if (m.type === 'compared') {
+          $('#metaA').textContent = m.aRows + '行 × ' + m.aCols + '列';
+          $('#metaB').textContent = m.bRows + '行 × ' + m.bCols + '列';
+          comparison = m; comparison.selected = null; renderResults();
+        } else if (m.type === 'viewport') handleViewport(m);
+        else if (m.type === 'cell') showCell(m);
+      };
+      worker.onerror = () => { worker.terminate(); worker = null; comparison = null; $('#compareButton').disabled = false; $('#compareButton').removeAttribute('aria-busy'); showError('比較処理中にWorkerが停止しました。ページを再読み込みして、もう一度お試しください。'); };
+    }
     function syncScroll(source, target) {
-      source.addEventListener("scroll", () => {
-        if (syncing) return;
-        syncing = true;
-        target.scrollTop = source.scrollTop;
-        target.scrollLeft = source.scrollLeft;
-        requestAnimationFrame(() => { syncing = false; });
+      source.addEventListener('scroll', () => {
+        if (!syncing) { syncing = true; target.scrollTop = source.scrollTop; target.scrollLeft = source.scrollLeft; requestAnimationFrame(() => { syncing = false; }); }
+        scheduleViewport();
       }, { passive: true });
     }
-
     function setupDrop(textarea) {
-      const card = textarea.closest(".paste-card");
-      card.addEventListener("dragover", (event) => {
-        event.preventDefault();
-        card.classList.add("dragging");
-      });
-      card.addEventListener("dragleave", () => card.classList.remove("dragging"));
-      card.addEventListener("drop", async (event) => {
-        event.preventDefault();
-        card.classList.remove("dragging");
-        const file = event.dataTransfer.files[0];
-        if (!file) return;
-        textarea.value = await file.text();
-        updateAllMeta();
+      const card = textarea.closest('.paste-card');
+      card.addEventListener('dragover', event => { event.preventDefault(); card.classList.add('dragging'); });
+      card.addEventListener('dragleave', () => card.classList.remove('dragging'));
+      card.addEventListener('drop', async event => {
+        event.preventDefault(); card.classList.remove('dragging');
+        const file = event.dataTransfer.files[0]; if (!file) return;
+        textarea.value = await file.text(); textarea.dispatchEvent(new Event('input', { bubbles: true }));
       });
     }
-
-    [inputA, inputB].forEach((input) => {
-      input.addEventListener("input", updateAllMeta);
-      input.addEventListener("keydown", (event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") compare();
-      });
+    [inputA, inputB].forEach(input => {
+      input.addEventListener('input', onInput);
+      input.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') compare(); });
       setupDrop(input);
     });
-
-    $("#compareButton").addEventListener("click", compare);
-    $("#swapButton").addEventListener("click", () => {
-      const value = inputA.value;
-      inputA.value = inputB.value;
-      inputB.value = value;
-      updateAllMeta();
-      if (comparison) compare();
+    $('#compareButton').addEventListener('click', compare);
+    $('#swapButton').addEventListener('click', () => {
+      const hadComparison = !!comparison || $('#compareButton').disabled;
+      const value = inputA.value; inputA.value = inputB.value; inputB.value = value;
+      inputVersions[0] += 1; inputVersions[1] += 1;
+      dirtyInputs.add(0); dirtyInputs.add(1);
+      invalidate(); clearTimeout(metaTimer); sendMeta(); if (hadComparison) compare();
     });
-    $("#clearButton").addEventListener("click", () => {
-      inputA.value = "";
-      inputB.value = "";
-      comparison = null;
-      updateAllMeta();
-      $("#result").hidden = true;
-      $("#emptyState").hidden = false;
-      $("#error").hidden = true;
-      inputA.focus();
+    $('#clearButton').addEventListener('click', () => {
+      inputA.value = ''; inputB.value = ''; invalidate(); clearTimeout(metaTimer);
+      inputVersions[0] += 1; inputVersions[1] += 1;
+      dirtyInputs.add(0); dirtyInputs.add(1); sendMeta();
+      if (worker) worker.postMessage({ type: 'clear', revision });
+      tables.forEach(table => { table.innerHTML = ''; });
+      $('#metaA').textContent = $('#metaB').textContent = '未入力';
+      $('#result').hidden = true; $('#emptyState').hidden = false; $('#error').hidden = true; inputA.focus();
     });
-
-    document.querySelectorAll("[data-mode]").forEach((button) => {
-      button.addEventListener("click", () => {
-        displayMode = button.dataset.mode;
-        document.querySelectorAll("[data-mode]").forEach((item) =>
-          item.classList.toggle("active", item === button)
-        );
-        if (comparison) {
-          renderTable("#sheetA", comparison.gridA);
-          renderTable("#sheetB", comparison.gridB);
-        }
-      });
+    document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
+      displayMode = button.dataset.mode;
+      document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item === button));
+      if (comparison) { scrolls[0].scrollTop = scrolls[1].scrollTop = 0; scheduleViewport(); }
+    }));
+    $('#sheetCompare').addEventListener('mouseover', event => {
+      const cell = event.target.closest('td[data-cell]');
+      if (cell) document.querySelectorAll('[data-cell="' + cell.dataset.cell + '"]').forEach(peer => peer.classList.add('peer-hover'));
     });
-
-    $("#sheetCompare").addEventListener("mouseover", (event) => {
-      const cell = event.target.closest("td[data-cell]");
-      if (!cell) return;
-      document.querySelectorAll('[data-cell="' + cell.dataset.cell + '"]').forEach(
-        (peer) => peer.classList.add("peer-hover")
-      );
+    $('#sheetCompare').addEventListener('mouseout', event => {
+      const cell = event.target.closest('td[data-cell]');
+      if (cell) document.querySelectorAll('[data-cell="' + cell.dataset.cell + '"]').forEach(peer => peer.classList.remove('peer-hover'));
     });
-    $("#sheetCompare").addEventListener("mouseout", (event) => {
-      const cell = event.target.closest("td[data-cell]");
-      if (!cell) return;
-      document.querySelectorAll('[data-cell="' + cell.dataset.cell + '"]').forEach(
-        (peer) => peer.classList.remove("peer-hover")
-      );
+    $('#sheetCompare').addEventListener('click', event => {
+      const cell = event.target.closest('td[data-row][data-col]');
+      if (cell && comparison) selectCell(Number(cell.dataset.row), Number(cell.dataset.col));
     });
-    $("#sheetCompare").addEventListener("click", (event) => {
-      const cell = event.target.closest("td[data-cell]");
-      if (!cell || !comparison) return;
-      selectCell(Number(cell.dataset.row), Number(cell.dataset.col));
-    });
-
-    syncScroll($("#scrollA"), $("#scrollB"));
-    syncScroll($("#scrollB"), $("#scrollA"));
-    updateAllMeta();
+    syncScroll(scrolls[0], scrolls[1]); syncScroll(scrolls[1], scrolls[0]);
+    const resizeObserver = new ResizeObserver(scheduleViewport);
+    scrolls.forEach(scroll => resizeObserver.observe(scroll));
+    sendMeta();
   </script>
 </body>
 </html>
