@@ -112,7 +112,8 @@ document.querySelector('#regression').onclick = async () => {
 
     const rows = 300, cols = 200;
     const a = Array.from({ length: rows }, (_, row) => Array.from({ length: cols }, (_, col) => `R${row}C${col}`).join('\t')).join('\n');
-    input('A', a); input('B', a + '_changed'); await compare();
+    const bRows = a.split('\n'); bRows[24] += '_changed'; bRows[299] += '_changed';
+    input('A', a); input('B', bRows.join('\n')); await compare();
     check('行列仮想化でDOM件数を抑制', document.querySelectorAll('td[data-cell]').length < 5000);
     const left = document.querySelector('#scrollA'), right = document.querySelector('#scrollB');
     left.scrollTop = left.scrollHeight; left.scrollLeft = left.scrollWidth;
@@ -122,11 +123,25 @@ document.querySelector('#regression').onclick = async () => {
     document.querySelector('#sheetB [data-cell="299:199"]').click();
     await until(() => document.querySelector('#inspector').textContent.includes('R299C199_changed'));
     check('仮想表示の末尾セル詳細', true);
-    document.querySelector('[data-mode="different"]').click(); await until(() => document.querySelectorAll('#sheetA td[data-cell]').length > 0 && document.querySelector('#sheetA .row-num')?.textContent === '300');
-    check('末尾差分の元行番号維持', true);
+    document.querySelector('[data-mode="different"]').click();
+    await until(() => ['#sheetA', '#sheetB'].every(side => document.querySelectorAll(side + ' td[data-cell]').length > 0 && Array.from(document.querySelectorAll(side + ' .row-num'), cell => cell.textContent).join() === '25,300'));
+    check('差分行フィルターで左右の元行番号を維持', ['#sheetA', '#sheetB'].every(side => Array.from(document.querySelectorAll(side + ' .row-num'), cell => cell.textContent).join() === '25,300'));
     document.querySelector('[data-mode="all"]').click(); await frame();
     left.scrollTop = 0; left.scrollLeft = 0;
     await until(() => document.querySelector('#sheetA [data-cell="0:0"]'));
+    const stripeColors = () => ['#sheetA', '#sheetB'].map(side => getComputedStyle(document.querySelector(side + ' [data-cell="24:0"]')).backgroundColor);
+    const initialRowColors = stripeColors();
+    const initialFirstRow = +document.querySelector('#sheetA [data-cell]').dataset.row;
+    left.scrollTop = 7 * 31;
+    await until(() => +document.querySelector('#sheetA [data-cell]').dataset.row === initialFirstRow + 1 && ['#sheetA', '#sheetB'].every(side => document.querySelector(side + ' [data-cell="24:0"]')));
+    await frame();
+    check('仮想表示範囲が1行移動しても左右の同じ元行で縞色を維持', JSON.stringify(stripeColors()) === JSON.stringify(initialRowColors));
+    document.querySelector('[data-mode="different"]').click();
+    await until(() => ['#sheetA', '#sheetB'].every(side => document.querySelectorAll(side + ' td[data-cell]').length > 0 && Array.from(document.querySelectorAll(side + ' .row-num'), cell => cell.textContent).join() === '25,300' && document.querySelector(side + ' [data-cell="24:0"]'))); await frame();
+    check('差分行フィルターでも左右の同じ元行で縞色を維持', JSON.stringify(stripeColors()) === JSON.stringify(initialRowColors));
+    document.querySelector('[data-mode="all"]').click(); await frame();
+    left.scrollTop = 0;
+    await until(() => +document.querySelector('#sheetA [data-cell]').dataset.row === 0);
     const originalHeight = left.style.height;
     left.style.height = '800px'; right.style.height = '800px';
     await until(() => document.querySelector('#sheetA [data-row="25"]'));

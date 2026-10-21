@@ -143,7 +143,7 @@
     .corner { top: 0; z-index: 6; text-align: center; }
     .row-num.has-diff { color: var(--red); background: #fff0ef; font-weight: 850; }
     td { width: 142px; min-width: 142px; max-width: 142px; color: #283946; cursor: default; }
-    tbody tr:nth-child(even) td:not(.different) { background: #fbfcfd; }
+    tbody tr.source-row-even td:not(.different) { background: #fbfcfd; }
     td.different {
       border-right-color: var(--red-line); border-bottom-color: var(--red-line);
       background: var(--red-soft); color: #8d2525; font-weight: 750;
@@ -463,7 +463,8 @@
             '" data-cell="' + item.row + ':' + col + '" data-row="' + item.row + '" data-col="' + col + '" title="' + escapeHtml(coordinate + '\n' + (value || '（空欄）')) + '">' +
             (value === '' ? '&nbsp;' : escapeHtml(value)) + '</td>';
         }).join("");
-        return '<tr><th class="row-num ' + (item.changed ? 'has-diff' : '') + '">' + (item.row + 1) + '</th><td class="virtual-space" aria-hidden="true"></td>' + cells + '<td class="virtual-space" aria-hidden="true"></td></tr>';
+        const parity = (item.row + 1) % 2 === 0 ? 'source-row-even' : 'source-row-odd';
+        return '<tr class="' + parity + '"><th class="row-num ' + (item.changed ? 'has-diff' : '') + '">' + (item.row + 1) + '</th><td class="virtual-space" aria-hidden="true"></td>' + cells + '<td class="virtual-space" aria-hidden="true"></td></tr>';
       }).join("");
       table.innerHTML = colgroup + header + '<tbody>' + spacer(top) + rows + spacer(bottom) + '</tbody>';
     }
