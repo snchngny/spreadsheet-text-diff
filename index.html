@@ -280,12 +280,16 @@
     const OVERSCAN = 5;
     let comparison = null;
     let displayMode = "all";
-    let syncing = false;
+    const mirroredScroll = new WeakMap();
     let revision = 0;
     let renderToken = 0;
     let cellToken = 0;
     let metaTimer = 0;
     let renderFrame = 0;
+    let renderedViewport = null;
+    let cachedViewport = null;
+    let pendingViewport = null;
+    let previousViewport = { row: 0, col: 0 };
     const inputVersions = [0, 0];
     const sentVersions = [-1, -1];
     const dirtyInputs = new Set([0, 1]);
@@ -410,6 +414,8 @@
     }
     function invalidate() {
       revision += 1; comparison = null;
+      renderedViewport = cachedViewport = pendingViewport = null;
+      previousViewport = { row: 0, col: 0 };
       if (renderFrame) cancelAnimationFrame(renderFrame);
       renderFrame = 0;
       cellToken += 1;
@@ -428,18 +434,65 @@
       clearTimeout(metaTimer);
       metaTimer = setTimeout(sendMeta, 180);
     }
+    function currentViewport() {
+      const scroll = scrolls[0];
+      const rowCount = displayMode === 'all' ? comparison.rowCount : comparison.changedRowCount;
+      const colCount = comparison.colCount;
+      const rows = Math.ceil(scroll.clientHeight / ROW_HEIGHT) + 1;
+      const cols = Math.ceil(scroll.clientWidth / COL_WIDTH) + 1;
+      const row = Math.min(Math.max(0, rowCount - 1), Math.floor(Math.max(0, scroll.scrollTop - ROW_HEIGHT) / ROW_HEIGHT));
+      const col = Math.min(Math.max(0, colCount - 1), Math.floor(Math.max(0, scroll.scrollLeft - ROW_HEADER_WIDTH) / COL_WIDTH));
+      return { row, col, rows, cols, rowCount, colCount,
+        rowEnd: Math.min(rowCount, row + rows), colEnd: Math.min(colCount, col + cols) };
+    }
+    function coversViewport(range, view, rowMargin = 0, colMargin = 0) {
+      return range && range.mode === displayMode &&
+        range.rowStart <= Math.max(0, view.row - rowMargin) &&
+        range.rowEnd >= Math.min(view.rowCount, view.rowEnd + rowMargin) &&
+        range.colStart <= Math.max(0, view.col - colMargin) &&
+        range.colEnd >= Math.min(view.colCount, view.colEnd + colMargin);
+    }
     function viewportRequest() {
       if (!comparison || !worker) return;
+      const view = currentViewport();
+      // 先読み済みデータから、その場で小さな表示範囲だけ描画する。
+      renderCachedViewport(view);
+      if (coversViewport(cachedViewport, view, view.rows * 4, view.cols)) return;
+      // 同時に送る要求は1件。応答時に最新のスクロール位置を再評価する。
+      if (pendingViewport) return;
+      const forwardRows = view.row >= previousViewport.row;
+      const forwardCols = view.col >= previousViewport.col;
+      const rowPadding = Math.max(OVERSCAN, view.rows);
+      const colPadding = Math.max(OVERSCAN, view.cols);
+      const rowStart = Math.max(0, Math.min(view.rowCount - view.rows - rowPadding * 12,
+        view.row - rowPadding * (forwardRows ? 4 : 8)));
+      const allColumns = view.colCount <= 32;
+      const colStart = allColumns ? 0 : Math.max(0, Math.min(view.colCount - view.cols - colPadding * 4,
+        view.col - colPadding * (forwardCols ? 1 : 3)));
       const token = ++renderToken;
-      const scroll = scrolls[0];
-      const rowStart = Math.max(0, Math.floor(Math.max(0, scroll.scrollTop - ROW_HEIGHT) / ROW_HEIGHT) - OVERSCAN);
-      const visibleRows = Math.ceil(scroll.clientHeight / ROW_HEIGHT) + OVERSCAN * 2 + 1;
-      const colStart = Math.max(0, Math.floor(Math.max(0, scroll.scrollLeft - ROW_HEADER_WIDTH) / COL_WIDTH) - OVERSCAN);
-      const visibleCols = Math.ceil(scroll.clientWidth / COL_WIDTH) + OVERSCAN * 2 + 1;
-      worker.postMessage({ type: "viewport", revision, token, mode: displayMode, rowStart,
-        rowEnd: rowStart + visibleRows, colStart, colEnd: colStart + visibleCols });
+      pendingViewport = { type: "viewport", revision, token, mode: displayMode, rowStart,
+        rowEnd: Math.min(view.rowCount, rowStart + view.rows + rowPadding * 12), colStart,
+        colEnd: allColumns ? view.colCount : Math.min(view.colCount, colStart + view.cols + colPadding * 4) };
+      previousViewport = view;
+      worker.postMessage(pendingViewport);
     }
     function scheduleViewport() { if (!renderFrame) renderFrame = requestAnimationFrame(() => { renderFrame = 0; viewportRequest(); }); }
+
+    function renderCachedViewport(view) {
+      if (!coversViewport(cachedViewport, view) || coversViewport(renderedViewport, view)) return;
+      const rowStart = Math.max(cachedViewport.rowStart, view.row - OVERSCAN);
+      const rowEnd = Math.min(cachedViewport.rowEnd, Math.max(view.rowEnd + OVERSCAN, rowStart + view.rows + OVERSCAN * 2));
+      const colStart = Math.max(cachedViewport.colStart, view.col - OVERSCAN);
+      const colEnd = Math.min(cachedViewport.colEnd, Math.max(view.colEnd + OVERSCAN, colStart + view.cols + OVERSCAN * 2));
+      const fromCol = colStart - cachedViewport.colStart;
+      const toCol = colEnd - cachedViewport.colStart;
+      const data = { ...cachedViewport.data, rowStart, colStart,
+        labels: cachedViewport.data.labels.slice(fromCol, toCol),
+        rows: cachedViewport.data.rows.slice(rowStart - cachedViewport.rowStart, rowEnd - cachedViewport.rowStart)
+          .map(row => ({ ...row, a: row.a.slice(fromCol, toCol), b: row.b.slice(fromCol, toCol), categories: row.categories.slice(fromCol, toCol) })) };
+      renderSide(tables[0], 0, data); renderSide(tables[1], 1, data);
+      renderedViewport = { mode: displayMode, rowStart, rowEnd, colStart, colEnd };
+    }
 
     function renderSide(table, side, data) {
       table.style.width = (ROW_HEADER_WIDTH + data.colCount * COL_WIDTH) + 'px';
@@ -470,9 +523,16 @@
     }
     function handleViewport(data) {
       if (!comparison || data.revision !== revision || data.token !== renderToken) return;
-      renderSide(tables[0], 0, data); renderSide(tables[1], 1, data);
+      const request = pendingViewport;
+      pendingViewport = null;
+      if (!request || request.mode !== displayMode) { viewportRequest(); return; }
+      // 大きなジャンプ前の応答で、現在の表示を古い位置へ戻さない。
+      if (!coversViewport(request, currentViewport()) && cachedViewport) { viewportRequest(); return; }
+      cachedViewport = { ...request, data };
+      renderCachedViewport(currentViewport());
       $('#compareButton').disabled = false;
       $('#compareButton').removeAttribute('aria-busy');
+      viewportRequest();
     }
     function renderResults() {
       const nf = new Intl.NumberFormat('ja-JP');
@@ -537,8 +597,15 @@
     }
     function syncScroll(source, target) {
       source.addEventListener('scroll', () => {
-        if (!syncing) { syncing = true; target.scrollTop = source.scrollTop; target.scrollLeft = source.scrollLeft; requestAnimationFrame(() => { syncing = false; }); }
-        scheduleViewport();
+        const expected = mirroredScroll.get(source);
+        mirroredScroll.delete(source);
+        if (!expected || expected.top !== source.scrollTop || expected.left !== source.scrollLeft) {
+          if (target.scrollTop !== source.scrollTop || target.scrollLeft !== source.scrollLeft) {
+            target.scrollTop = source.scrollTop; target.scrollLeft = source.scrollLeft;
+            mirroredScroll.set(target, { top: target.scrollTop, left: target.scrollLeft });
+          }
+        }
+        viewportRequest();
       }, { passive: true });
     }
     function setupDrop(textarea) {
@@ -576,7 +643,7 @@
     document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
       displayMode = button.dataset.mode;
       document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item === button));
-      if (comparison) { scrolls[0].scrollTop = scrolls[1].scrollTop = 0; scheduleViewport(); }
+      if (comparison) { renderedViewport = cachedViewport = null; scrolls[0].scrollTop = scrolls[1].scrollTop = 0; scheduleViewport(); }
     }));
     $('#sheetCompare').addEventListener('mouseover', event => {
       const cell = event.target.closest('td[data-cell]');

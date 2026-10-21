@@ -10,7 +10,7 @@ const baseline = execFileSync('git', ['show', `${baselineRef}:index.html`], { cw
 const results = new URL('.local/performance.jsonl', root);
 fs.mkdirSync(new URL('.local/', root), { recursive: true });
 const controls = `<style>#bench{position:fixed;bottom:0;left:0;right:0;z-index:9999;background:#172430;color:white;padding:8px;font:12px monospace}#bench button{padding:6px;margin:3px}#bench-output{margin:0;max-height:90px;overflow:auto;white-space:pre-wrap}</style>
-<div id="bench"><button data-rows="2000">Run 2000x20</button><button data-rows="10000">Run 10000x20</button><button data-rows="100000">Run 100000x20</button><button id="regression">Regression</button><pre id="bench-output">Ready</pre></div><script src="/fixture.js"></script>`;
+<div id="bench"><button data-rows="2000">Run 2000x20</button><button data-rows="10000">Run 10000x20</button><button data-rows="100000">Run 100000x20</button><button id="regression">Regression</button><button id="scroll-regression">Scroll</button><pre id="bench-output">Ready</pre></div><script src="/fixture.js"></script><script src="/scroll-fixture.js"></script>`;
 const server = http.createServer((req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'POST' && req.url === '/result') {
@@ -22,9 +22,9 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.url === '/fixture.js') {
+  if (req.url === '/fixture.js' || req.url === '/scroll-fixture.js') {
     res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-    res.end(fs.readFileSync(new URL('browser-fixture.js', import.meta.url)));
+    res.end(fs.readFileSync(new URL(req.url === '/fixture.js' ? 'browser-fixture.js' : 'scroll-fixture.js', import.meta.url)));
     return;
   }
   if (req.url === '/' || req.url === '/current' || req.url === '/baseline') {

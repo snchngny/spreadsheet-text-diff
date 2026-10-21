@@ -132,10 +132,10 @@ document.querySelector('#regression').onclick = async () => {
     const stripeColors = () => ['#sheetA', '#sheetB'].map(side => getComputedStyle(document.querySelector(side + ' [data-cell="24:0"]')).backgroundColor);
     const initialRowColors = stripeColors();
     const initialFirstRow = +document.querySelector('#sheetA [data-cell]').dataset.row;
-    left.scrollTop = 7 * 31;
-    await until(() => +document.querySelector('#sheetA [data-cell]').dataset.row === initialFirstRow + 1 && ['#sheetA', '#sheetB'].every(side => document.querySelector(side + ' [data-cell="24:0"]')));
+    left.scrollTop = 14 * 31;
+    await until(() => +document.querySelector('#sheetA [data-cell]').dataset.row > initialFirstRow && ['#sheetA', '#sheetB'].every(side => document.querySelector(side + ' [data-cell="24:0"]')));
     await frame();
-    check('仮想表示範囲が1行移動しても左右の同じ元行で縞色を維持', JSON.stringify(stripeColors()) === JSON.stringify(initialRowColors));
+    check('仮想表示範囲が移動しても左右の同じ元行で縞色を維持', JSON.stringify(stripeColors()) === JSON.stringify(initialRowColors));
     document.querySelector('[data-mode="different"]').click();
     await until(() => ['#sheetA', '#sheetB'].every(side => document.querySelectorAll(side + ' td[data-cell]').length > 0 && Array.from(document.querySelectorAll(side + ' .row-num'), cell => cell.textContent).join() === '25,300' && document.querySelector(side + ' [data-cell="24:0"]'))); await frame();
     check('差分行フィルターでも左右の同じ元行で縞色を維持', JSON.stringify(stripeColors()) === JSON.stringify(initialRowColors));
